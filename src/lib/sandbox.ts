@@ -3137,9 +3137,7 @@ export function sandBox(
                         sandbox.log(`getState(id=${id}, timerId=${JSON.stringify(timers[id])}) => not found`, 'info');
                     }
 
-                    context.logWithLineInfo(
-                        `getState "${id}" not found (3)${states[id] !== undefined ? ` states[id]=${JSON.stringify(states[id])}` : ''}`,
-                    ); ///xxx
+                    context.logWithLineInfo(`getState "${id}" not found`);
                     return { val: null, notExist: true } as ioBroker.State & { notExist?: true };
                 }
             }
@@ -5925,4 +5923,3 @@ export function sandBox(
 
     return sandbox;
 }
-
