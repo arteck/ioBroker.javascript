@@ -1,475 +1,494 @@
-# ioBroker CPU-Creep Diagnostic für `javascript.*`
+# 🔍 ioBroker CPU-Creep Diagnostic für `javascript.*`
 
-> Wiki-artige Analyse und Dokumentation des bereitgestellten Diagnose-Skripts für `ioBroker.javascript`.
+> [!NOTE]
+> Diese Version ist für **GitHub Markdown** optimiert: mit klarer Seitenstruktur, Emojis, Callouts, Tabellen und einer stärker scannbaren Darstellung für Doku, Repository-Wiki oder Knowledge Base.
 
-## Inhaltsverzeichnis
+## 📚 Inhaltsverzeichnis
 
-- [Ziel und Zweck](#ziel-und-zweck)
-- [Kurzüberblick](#kurzüberblick)
-- [Konfiguration](#konfiguration)
-- [Architektur und Datenfluss](#architektur-und-datenfluss)
-- [Funktionsanalyse](#funktionsanalyse)
-- [HTML-Ausgabe in VIS](#html-ausgabe-in-vis)
-- [Interpretation der Messwerte](#interpretation-der-messwerte)
-- [Stärken](#stärken)
-- [Risiken und Schwachstellen](#risiken-und-schwachstellen)
-- [Empfehlungen zur Verbesserung](#empfehlungen-zur-verbesserung)
-- [Praxisleitfaden zur Nutzung](#praxisleitfaden-zur-nutzung)
-- [Fazit](#fazit)
-
----
-
-## Ziel und Zweck
-
-Dieses Skript dient dazu, **CPU-Creep** bzw. schleichende Ressourcenakkumulation in `ioBroker.javascript`-Instanzen sichtbar zu machen. Der Fokus liegt nicht nur auf CPU-Zeit, sondern vor allem auf wachsenden internen Ressourcen pro Skript, etwa `timeouts`, `intervals`, `schedules`, `subscriptions`, `messageHandlers` oder `logSubs`.
-
-Die Grundidee ist sinnvoll: Ein fehlerhaftes Skript fällt oft nicht sofort durch hohe CPU-Last auf, sondern durch einen **stetigen Anstieg** aktiver Timer, Subscriptions oder verzögerter States. Genau diese Entwicklung bildet das Skript über Baseline, Delta und Verlauf ab.
+- [🎯 Zielbild](#-zielbild)
+- [⚡ Executive Summary](#-executive-summary)
+- [🧩 Konfiguration](#-konfiguration)
+- [🏗️ Architektur](#️-architektur)
+- [🛠️ Funktionsanalyse](#️-funktionsanalyse)
+- [🖥️ VIS-Ausgabe](#️-vis-ausgabe)
+- [📈 Interpretation der Metriken](#-interpretation-der-metriken)
+- [✅ Stärken](#-stärken)
+- [⚠️ Schwachstellen](#️-schwachstellen)
+- [🚀 Verbesserungen](#-verbesserungen)
+- [🧪 Praxisleitfaden](#-praxisleitfaden)
+- [🏁 Gesamtbewertung](#-gesamtbewertung)
 
 ---
 
-## Kurzüberblick
+## 🎯 Zielbild
 
-| Bereich | Beschreibung |
+Dieses Skript soll den **CPU-Creep** bzw. allgemeiner die **schleichende Ressourcenakkumulation** in `ioBroker.javascript`-Instanzen sichtbar machen.
+
+Es beobachtet dafür pro Skript unter anderem:
+
+- ⏱️ `timeouts`
+- 🔁 `intervals`
+- 🗓️ `schedules`
+- 💤 `delayedStates`
+- 📡 `stateSubs`
+- 🌐 `wildcardSubs`
+- 📁 `fileSubs`
+- 🧱 `objectSubs`
+- 📨 `messageHandlers`
+- 🪵 `logSubs`
+
+Der eigentliche Mehrwert liegt darin, dass nicht nur ein Momentzustand gezeigt wird, sondern auch das **Wachstum seit der ersten Messung** (`Δstart`) und ein **kompakter Verlauf** der letzten 10 Minuten.
+
+> [!TIP]
+> Genau solche schleichenden Anstiege sind in ioBroker oft aussagekräftiger als eine einmalig hohe CPU-Last.
+
+---
+
+## ⚡ Executive Summary
+
+| Bereich | Einschätzung |
 |---|---|
-| Zweck | Diagnose von schleichendem Ressourcenwachstum in mehreren `javascript.*`-Instanzen |
-| Transport | Abfrage per `sendToAsync(instance, 'diag', {})` über den Message-Bus |
-| Reichweite | Host-übergreifend, solange Zielinstanz erreichbar ist und `diag` unterstützt |
-| Ausgabe | HTML-String in State `0_userdata.0.cpu_check` |
-| Visualisierung | VIS `Basic -> HTML` Widget |
-| Sampling | Standardmäßig alle 30 Sekunden |
-| Verlauf | Rolling Window über 10 Minuten |
-| Fokus | Top-Skripte nach Gesamtzahl aktiver Ressourcen und Wachstumsdelta seit Start |
+| Nutzen | **Hoch** – sehr brauchbar für die operative Leak-Suche |
+| VIS-Tauglichkeit | **Sehr hoch** – direkt als HTML-State nutzbar |
+| Codequalität | **Gut bis sehr gut** – klar strukturiert und sauber getrennt |
+| Diagnosewert | **Hoch** – Baseline, Delta und Verlauf sind sinnvoll kombiniert |
+| Schwächen | Baseline nur im RAM, HTML statt JSON, `total` nur heuristisch |
+| Ausbaupotenzial | Gewichteter Score, JSON-Ausgabe, Alarme, persistente Baseline |
+
+> [!IMPORTANT]
+> Das Skript ist **kein klassisches CPU-Monitoring**, sondern ein **Leak-/Akkumulationsdetektor** mit CPU-Bezug.
 
 ---
 
-## Konfiguration
+## 🧩 Konfiguration
 
-### Relevante Konstanten
+### Relevante Parameter
 
-| Konstante | Standardwert | Bedeutung |
+| Parameter | Default | Bedeutung |
 |---|---:|---|
-| `INSTANCES` | `['javascript.0', 'javascript.1', 'javascript.2']` | Zu überwachende JavaScript-Adapterinstanzen |
-| `INTERVAL_MS` | `30000` | Messintervall in Millisekunden |
-| `HISTORY_MS` | `10 * 60 * 1000` | Historienfenster von 10 Minuten |
-| `TOP_N` | `20` | Anzahl der Skripte pro Instanz in der Detailtabelle |
-| `TOP_GROWERS` | `5` | Anzahl der stärksten Wachser in der Verlaufszeile |
-| `CONTAINER_HEIGHT` | `600` | Höhe des scrollbaren HTML-Containers |
-| `STATE_ID` | `0_userdata.0.cpu_check` | Ziel-State für die HTML-Ausgabe |
+| `INSTANCES` | `['javascript.0', 'javascript.1', 'javascript.2']` | Alle zu überwachenden Instanzen |
+| `INTERVAL_MS` | `30000` | Sampling alle 30 Sekunden |
+| `HISTORY_MS` | `10 * 60 * 1000` | Historie über 10 Minuten |
+| `TOP_N` | `20` | Anzahl sichtbarer Skripte pro Instanz |
+| `TOP_GROWERS` | `5` | Anzahl genannter Wachser in der Verlaufszeile |
+| `CONTAINER_HEIGHT` | `600` | Höhe des Scrollcontainers im VIS |
+| `STATE_ID` | `0_userdata.0.cpu_check` | Ziel-State für HTML |
 
-### Bewertung der Konfiguration
+### Bewertung
 
-- Die Defaults sind für eine erste Diagnose **praxisnah**.
-- Ein 30-Sekunden-Intervall ist ein guter Kompromiss aus Reaktionsfähigkeit und Bus-/Render-Last.
-- Das 10-Minuten-Fenster ist kurz genug, damit der State nicht ausufert, aber lang genug, um Trends sichtbar zu machen.
-- `TOP_N = 20` ist für VIS noch gut lesbar; bei vielen Skripten kann das trotzdem dicht wirken.
+- ✅ Die Defaults sind **praxisnah** für eine erste Analyse.
+- ✅ 30 Sekunden Sampling ist ein guter Mittelweg zwischen Reaktionsgeschwindigkeit und Zusatzlast.
+- ✅ Das 10-Minuten-Fenster hält den State klein und bleibt trotzdem trendfähig.
+- ⚠️ Bei sehr vielen Skripten oder dicht belegten Instanzen kann `TOP_N = 20` trotzdem knapp werden.
 
 ---
 
-## Architektur und Datenfluss
+## 🏗️ Architektur
 
 ```text
-javascript-Diagnoseskript
-        |
-        | sendToAsync(..., 'diag', {})
-        v
-alle konfigurierten javascript.*-Instanzen
-        |
-        | Rückgabe: global + perScript
-        v
-Aufbereitung pro Instanz
-        |
-        | Baseline / Delta / CPU-Prozent / History
-        v
-HTML-Generierung
-        |
-        v
+Diagnoseskript
+   |
+   | sendToAsync(instance, 'diag', {})
+   v
+javascript.0 / javascript.1 / javascript.2
+   |
+   | Rückgabe: global + perScript
+   v
+Aufbereitung im Sammelskript
+   |
+   | Baseline + CPU-Differenz + Verlauf + HTML
+   v
 State: 0_userdata.0.cpu_check
-        |
-        v
+   |
+   v
 VIS HTML Widget
 ```
 
-### Interner Zustand
+### Zentrale Datenstrukturen
 
-Das Skript hält zwei zentrale Datenstrukturen im Speicher:
-
-| Struktur | Zweck |
+| Struktur | Aufgabe |
 |---|---|
-| `stateByInstance` | Merkt sich pro Instanz die Baseline je Skript und den letzten CPU-Messpunkt |
-| `history` | Hält die Verlaufseinträge innerhalb des letzten 10-Minuten-Fensters |
+| `stateByInstance` | Hält pro Instanz Baseline und letzte CPU-Messwerte |
+| `history` | Rolling Window der letzten Verlaufszeilen |
 
-Das ist effizient, weil keine externe Persistenz nötig ist. Gleichzeitig bedeutet es aber auch: **nach Skriptneustart beginnt die Baseline wieder bei null**.
+> [!NOTE]
+> Die Baseline lebt nur im Speicher des Skripts. Nach einem Neustart beginnt die Beobachtung wieder von vorne.
 
 ---
 
-## Funktionsanalyse
+## 🛠️ Funktionsanalyse
 
 ### `totalOf(s)`
 
-Diese Funktion summiert alle relevanten Ressourcen eines Skripts zu einer Kennzahl `total`:
+Bildet einen zusammengefassten Ressourcenwert pro Skript.
 
-- `stateSubs`
-- `fileSubs`
-- `objectSubs`
-- `timeouts`
-- `intervals`
-- `schedules`
-- `delayedStates`
-- `messageHandlers`
-- `logSubs`
+**Positiv:**
+- ✅ Sehr gut als schnelle Heuristik für auffällige Skripte.
+- ✅ Einfach vergleichbar und gut sortierbar.
 
-**Bewertung:**
+**Einschränkung:**
+- ⚠️ Nicht jede Ressource ist gleich kritisch.
+- ⚠️ `intervals` oder `wildcardSubs` können praktisch schwerer wiegen als andere Zähler.
 
-- Für die Leak-Suche ist diese Verdichtung sehr nützlich.
-- Sie ist aber keine echte Qualitätsmetrik, sondern ein **Heuristik-Score**.
-- Nicht jede Ressource ist gleich teuer; ein `interval` kann kritischer sein als eine zusätzliche `logSub`.
+---
 
 ### `esc(v)`
 
-HTML-Escaping für `&`, `<`, `>` und `"`.
+Escaped HTML-Sonderzeichen vor der Ausgabe in die Tabelle.
 
 **Bewertung:**
+- ✅ Korrekt und notwendig.
+- ✅ Verhindert HTML-Artefakte und triviale Injektionen in der Darstellung.
 
-- Sauber und notwendig, weil Skriptnamen oder Ressourcenbezeichner direkt in HTML geschrieben werden.
-- Verhindert Darstellungsfehler und triviale HTML-Injektion.
+---
 
 ### `cpuStyle(pct)`
 
-Farbliche Hervorhebung der CPU-Last:
+Setzt CPU-Farben nach Schwellwert:
 
-| CPU-% | Stil |
+| CPU-Wert | Wirkung |
 |---|---|
-| `< 20` | kein Spezialstil |
-| `20 - 49.9` | orange |
-| `>= 50` | rot und fett |
+| unter 20 % | neutral |
+| ab 20 % | orange |
+| ab 50 % | rot + fett |
 
-**Bewertung:**
+> [!TIP]
+> Für Betriebsteams wäre das noch besser, wenn die Grenzwerte konfigurierbar wären.
 
-- Gut verständlich.
-- Für ein produktives Monitoring wäre zusätzlich eine konfigurierbare Schwellwertlogik sinnvoll.
+---
 
 ### `instanceDetail(instance, res, cpuLine, cpuPct)`
 
-Erzeugt den Hauptblock je Instanz:
+Erzeugt den Detailblock je Instanz mit:
 
-- Kopfzeile mit Instanzname und CPU-Zeile
-- Subline mit Skriptanzahl, RSS, Heap und Summen-Subscriptions
-- Optional `activeResources`
+- Instanzkopf
+- CPU-Zeile
+- Speicher-/Subscription-Zusammenfassung
+- optionalen `activeResources`
 - Detailtabelle der Top-Skripte
 
-Die Tabelle sortiert nach `total`, also nach der Gesamtzahl aktiver Ressourcen. Das Delta `Δstart` berechnet sich relativ zur ersten Beobachtung der laufenden Session.
+Die Sortierung erfolgt nach `total`, nicht nach `Δstart`.
 
-**Wichtig:** Eine rote Zeile bedeutet nicht automatisch Fehler. Kritisch wird sie dann, wenn `Δstart` über mehrere Samples **kontinuierlich steigt**.
+> [!IMPORTANT]
+> Eine rote Zeile heißt nicht automatisch „defekt“. Entscheidend ist, ob `Δstart` über mehrere Samples **kontinuierlich weiter steigt**.
+
+---
 
 ### `instanceSummary(instance, res, cpuPct)`
 
-Erzeugt die kompakte Verlaufsdarstellung pro Instanz:
+Baut die kompakte Verlaufszeile für die Historie auf.
 
-- CPU-Prozent
-- RSS
-- Liste der größten Wachser (`TOP_GROWERS`)
+**Stärken:**
+- ✅ sehr platzsparend
+- ✅ Trenddarstellung auch in kleinen VIS-Flächen gut lesbar
+- ✅ nennt direkt die größten Wachser pro Instanz
 
-Das ist gut gelöst, weil die Historie bewusst kompakt bleibt. So lässt sich auch in VIS auf kleiner Fläche ein Trend lesen.
+---
 
 ### `sampleInstance(instance)`
 
 Das ist die zentrale Messfunktion.
 
-Ablauf:
+#### Ablauf
 
-1. Zustand der Instanz aus `stateByInstance` laden oder initialisieren.
-2. Per `sendToAsync` Diagnosedaten abrufen.
-3. Offline-/Fehlerfälle als graue Statusmeldung zurückgeben.
-4. CPU-Prozent aus Differenz von CPU-Zeit und Wall-Time berechnen.
+1. Vorherigen Zustand der Instanz laden oder initialisieren.
+2. Diagnosedaten per `sendToAsync(..., 'diag', {})` anfordern.
+3. Fehler- oder Offlinefälle abfangen.
+4. CPU-Differenz zum letzten Sample berechnen.
 5. Baseline beim ersten gültigen Sample setzen.
 6. Detail- und Summary-HTML zurückgeben.
 
-**CPU-Berechnung:**
+#### CPU-Berechnung
 
-Die Formel ist logisch:
+```text
+wallMs = now - prev.now
+cpuMs  = (cpuUserMs + cpuSystemMs) - (prev.cpuUserMs + prev.cpuSystemMs)
+cpuPct = (cpuMs / wallMs) * 100
+```
 
-- `wallMs = now - prev.now`
-- `cpuMs = (cpuUserMs + cpuSystemMs) - vorheriger Wert`
-- `cpuPct = (cpuMs / wallMs) * 100`
+> [!CAUTION]
+> `cpuPct` ist hier als **Trendmetrik** zu lesen, nicht als 1:1-Abbild der System-CPU im Betriebssystem.
 
-### Interpretation der CPU-Messung
-
-Diese Prozentzahl ist **keine absolute System-CPU**, sondern die auf das Intervall bezogene CPU-Zeit der jeweiligen JavaScript-Instanz. Das ist für Trendbeobachtung passend, kann aber missverstanden werden.
-
-Besonders bei Mehrkernsystemen und Adapter-internen Messgrößen sollte man den Wert als **indikative Lastmetrik** lesen, nicht als exakte OS-CPU-Anzeige.
+---
 
 ### `sample()`
 
-Diese Funktion orchestriert den gesamten Zyklus:
+Orchestriert den kompletten Messzyklus:
 
-- Alle Instanzen parallel messen via `Promise.all`
-- Verlaufszeile hinzufügen
-- Historie auf 10 Minuten trimmen
-- HTML komplett zusammensetzen
-- HTML in den Ziel-State schreiben
+- paralleles Sampling aller Instanzen
+- Aufbau der Verlaufszeile
+- Trimmen der Historie auf 10 Minuten
+- Zusammenbau des HTML-Blocks
+- Schreiben in den Ziel-State
 
 **Bewertung:**
+- ✅ gute Parallelisierung mit `Promise.all`
+- ✅ keine unnötige State-Aufblähung
+- ✅ sauberer, übersichtlicher Ablauf
 
-- Parallelisierung ist richtig und reduziert Zyklusdauer.
-- Die History wird sauber beschnitten, wodurch State-Größe und VIS-Last begrenzt bleiben.
+---
 
 ### `main()`
 
-Initialisiert den State, schreibt eine Logmeldung, führt sofort ein erstes Sample aus und startet dann den Timer.
+Initialisiert den Ziel-State, startet das erste Sample sofort und setzt anschließend den Intervalltimer.
 
-Außerdem wird per `onStop()` das Intervall beim Skriptstopp aufgeräumt. Das ist wichtig und sauber implementiert.
+Zusätzlich wird das Intervall mit `onStop()` sauber beendet.
+
+> [!TIP]
+> Das ist ein kleines, aber wichtiges Qualitätsmerkmal: Das Diagnoseskript leakt nicht selbst weiter, wenn es gestoppt wird.
 
 ---
 
-## HTML-Ausgabe in VIS
+## 🖥️ VIS-Ausgabe
 
-### Aufbau der Ausgabe
-
-Die generierte HTML-Struktur besteht aus drei Ebenen:
+### Struktur der HTML-Ausgabe
 
 | Ebene | Inhalt |
 |---|---|
-| Header | Zeitstempel, Sampling-Intervall, Verlaufsfenster |
-| Detailbereich | Pro Instanz eine Tabelle mit Skript-Ressourcen |
-| Verlaufsbereich | Kompakte historische Samples, neueste zuerst |
+| Kopfzeile | Aktualisierungszeit, Sampling-Intervall, Verlaufslänge |
+| Detailbereich | Pro Instanz eine Tabelle der auffälligen Skripte |
+| Verlaufsbereich | letzte Samples, neueste zuerst |
 
-### Styling-Konzept
+### Positive UI-Aspekte
 
-Das CSS ist komplett inline definiert. Das hat im VIS-Kontext klare Vorteile:
+- ✅ Monospace-Look passt zum Diagnose-Use-Case.
+- ✅ Feste Höhe mit Scrollbereich ist in VIS praktisch.
+- ✅ Subline trennt Metadaten sinnvoll von den Skriptdetails.
+- ✅ Wachstumszeilen sind optisch schnell auffindbar.
 
-- Keine Abhängigkeit von externen CSS-Dateien
-- Widget ist sofort renderbar
-- Transport ausschließlich über einen HTML-State
+### UI-Grenzen
 
-### Positive Punkte
-
-- Monospace-Schrift passt zum Diagnosecharakter.
-- Feste Containerhöhe mit `overflow:auto` ist für VIS sehr praktisch.
-- Hervorhebung wachsender Zeilen per leicht rotem Hintergrund ist gut erkennbar.
-- Die Subline trennt Systemmetadaten von Skriptdetails sinnvoll.
-
-### Mögliche UI-Schwächen
-
-| Thema | Bewertung |
+| Thema | Auswirkung |
 |---|---|
-| Mobile/kleine Widgets | Tabelle kann schnell zu breit werden |
-| Farbcodierung allein | Für Barrierefreiheit nicht ideal |
-| Sehr viele Skripte | Top-20 bleibt übersichtlich, verbirgt aber ggf. kleinere Leaks |
-| Reines HTML im State | Debuggen und Weiterverarbeitung sind schwerer als bei JSON |
+| viele Spalten | auf kleineren Widgets schnell eng |
+| Farbe als Hauptsignal | für Accessibility nicht ideal |
+| HTML als Endformat | gut für VIS, schlecht für Weiterverarbeitung |
+| Top-N-Ansatz | kleinere Leaks können aus der Liste fallen |
 
 ---
 
-## Interpretation der Messwerte
+## 📈 Interpretation der Metriken
 
-### Spaltenbedeutung
+### Spalten lesen
 
-| Spalte | Bedeutung | Typischer Hinweis bei Wachstum |
+| Spalte | Bedeutung | Warnsignal |
 |---|---|---|
-| `total` | Summe aller erfassten Ressourcen | genereller Verdacht auf Akkumulation |
-| `Δstart` | Wachstum seit dem ersten Sample | zentraler Leak-Indikator |
-| `tmo` | aktive Timeouts | nicht aufgeräumte `setTimeout`-Nutzung |
-| `intv` | aktive Intervalle | klassischer `setInterval`-Leak |
-| `sched` | Schedules | mehrfach registrierte Cron-/Scheduler-Jobs |
-| `delayed` | verzögerte States | aufgestaute verzögerte Aktionen |
-| `state` | State-Subscriptions | doppelte oder unendliche `on()`-Registrierungen |
-| `wild` | Wildcard-Subscriptions | besonders kritisch, wenn breit gefächert |
-| `file` | File-Subscriptions | selten, aber beobachtbar |
+| `total` | Gesamtzahl aktiver Ressourcen | globaler Auffälligkeitswert |
+| `Δstart` | Wachstum seit Start | wichtigster Leak-Indikator |
+| `tmo` | Timeouts | wiederholt erzeugte Timer |
+| `intv` | Intervalle | klassischer `setInterval()`-Leak |
+| `sched` | Schedules | doppelte Scheduler-Registrierung |
+| `delayed` | verzögerte States | Rückstau oder fehlendes Abarbeiten |
+| `state` | State-Subscriptions | mehrfaches `on()` |
+| `wild` | Wildcard-Subscriptions | breite und teure Beobachtung |
+| `file` | File-Subscriptions | Spezialfall, aber beobachtbar |
 | `obj` | Objekt-Subscriptions | unnötige Objektbeobachtung |
-| `msg` | Message-Handler | mehrfach gebundene Handler |
+| `msg` | Message-Handler | doppelte Handler-Registrierung |
 | `logSub` | Log-Subscriptions | nicht entfernte Log-Abos |
 
 ### Typische Muster
 
-#### Unkritisch
+#### 🟢 Unkritisch
 
-- `Δstart` bleibt über längere Zeit stabil.
-- Einzelne Peaks fallen später wieder zurück.
-- CPU steigt kurz, aber Ressourcen wachsen nicht nachhaltig.
+- `Δstart` bleibt stabil.
+- Peaks fallen wieder zurück.
+- CPU steigt kurz, ohne dauerhaften Ressourcenanstieg.
 
-#### Verdächtig
+#### 🟠 Verdächtig
 
-- Ein Skript zeigt `Δstart` in fast jedem Sample weiter ansteigend.
-- Besonders `intervals`, `timeouts` oder `stateSubs` nehmen monoton zu.
-- CPU-Prozent steigt parallel mit dem Ressourcenwachstum.
+- `Δstart` wächst in mehreren aufeinanderfolgenden Samples.
+- `intervals`, `timeouts` oder `stateSubs` steigen monoton.
+- CPU und Ressourcenanstieg korrelieren sichtbar.
 
-#### Stark verdächtig
+#### 🔴 Stark verdächtig
 
-- Mehrere Ressourcentypen wachsen gemeinsam, etwa `stateSubs` und `messageHandlers`.
-- Historie zeigt denselben Skriptnamen wiederholt unter den `TOP_GROWERS`.
-- RSS/Heap wächst mit, ohne sich wieder zu normalisieren.
+- mehrere Ressourcentypen wachsen gleichzeitig
+- derselbe Skriptname taucht immer wieder als Top-Grower auf
+- RSS/Heap wachsen parallel mit
 
----
-
-## Stärken
-
-### Funktionale Stärken
-
-- **Instanzübergreifend:** geeignet für verteilte Setups mit mehreren `javascript.*`-Instanzen.
-- **Direkter VIS-Nutzen:** keine Zusatzkomponenten nötig.
-- **Trendorientiert:** nicht nur Snapshot, sondern Baseline plus Verlauf.
-- **Leichtgewichtig:** keine DB, keine Fremdbibliothek, keine persistente Historie.
-- **Gute Fehlerbehandlung:** Offline- oder ungültige Antworten werden sichtbar markiert.
-
-### Technische Stärken
-
-- Klare Struktur und gut lesbarer Code.
-- Sinnvolle Trennung von Detail- und Summary-Darstellung.
-- Sauberes Lifecycle-Handling mit `onStop(clearInterval)`.
-- HTML-Escaping vorhanden.
-- History-Trim verhindert Datenflut im State.
+> [!WARNING]
+> Besonders kritisch sind Muster, bei denen **`stateSubs` + `wildcardSubs` + `messageHandlers`** gemeinsam steigen. Das deutet oft auf fehlerhafte Wiederregistrierung hin.
 
 ---
 
-## Risiken und Schwachstellen
+## ✅ Stärken
+
+### Fachlich
+
+- 🌍 Instanzübergreifend, auch für Multi-Host-Szenarien geeignet
+- 📉 Trendorientiert statt reiner Snapshot-Betrachtung
+- 🧭 Gute Eingrenzung des verdächtigen Skripts
+- 🖥️ Sofort in VIS verwendbar
+- 🪶 Leichtgewichtig ohne zusätzliche Infrastruktur
+
+### Technisch
+
+- 🧼 guter, sauber lesbarer Code
+- 🧱 klare Trennung zwischen Sammeln, Rendern und Zusammenfassen
+- 🛑 sauberes Lifecycle-Handling mit `onStop()`
+- 🛡️ HTML-Escaping vorhanden
+- ✂️ History wird begrenzt und wächst nicht unendlich
+
+---
+
+## ⚠️ Schwachstellen
 
 ### 1. Abhängigkeit von `diag`
 
-Das Skript funktioniert nur dann vollständig, wenn die Zielinstanz auf `sendTo(..., 'diag', {})` sinnvoll antwortet. Ohne diese Gegenstelle ist das Monitoring blind.
+> [!CAUTION]
+> Ohne passende Antwort auf `sendTo(..., 'diag', {})` ist die jeweilige Instanz praktisch nicht auswertbar.
 
-**Folge:** Vor produktiver Nutzung muss geprüft werden, ob alle `javascript.*`-Instanzen dieselbe Diagnoseschnittstelle bereitstellen.
-
-### 2. Baseline nur im RAM
-
-Die Baseline wird nur im Arbeitsspeicher gehalten. Nach Neustart des Skripts oder der Engine ist die Referenz weg.
-
-**Folge:** Langfristige Vergleiche über Neustarts hinweg sind nicht möglich.
-
-### 3. `total` gewichtet alle Ressourcen gleich
-
-Die Summenbildung ist praktisch, aber grob. Eine zusätzliche `wildcardSub` kann in der Realität schwerwiegender sein als mehrere harmlose Einträge in anderen Kategorien.
-
-**Folge:** Die Sortierung zeigt Auffälligkeiten, aber keine echte Priorisierung nach Performance-Auswirkung.
-
-### 4. CPU-Wert potenziell missverständlich
-
-`cpuPct` ist als Trendwert nützlich, aber ohne genaue Definition der Ursprungscounter leicht fehlinterpretierbar.
-
-**Folge:** Anwender könnten den Wert mit OS-CPU-Auslastung verwechseln.
-
-### 5. HTML statt strukturierter Daten
-
-Die direkte HTML-Erzeugung ist für VIS bequem, aber analytisch limitiert.
-
-**Nachteile:**
-
-- keine einfache Weiterverarbeitung in Grafana/InfluxDB
-- schwerere externe Analyse
-- Layout und Daten sind eng gekoppelt
-
-### 6. Kein Schutz gegen große Namensmengen
-
-Wenn sehr viele Skripte existieren oder ungewöhnlich lange Skriptnamen vorkommen, kann die HTML-Ausgabe unübersichtlich werden.
+Das Skript setzt voraus, dass jede Zielinstanz die benötigte Diagnoseschnittstelle bereitstellt.
 
 ---
 
-## Empfehlungen zur Verbesserung
+### 2. Baseline nicht persistent
 
-### Priorität A: Daten und Darstellung trennen
+Die Baseline wird nur im RAM gehalten.
 
-**Empfehlung:** Neben dem HTML zusätzlich einen JSON-State schreiben, z. B. `0_userdata.0.cpu_check_json`.
+**Folge:**
+- Nach Neustarts geht die Referenz verloren.
+- Langfristige Vergleiche über Sessions hinweg fehlen.
 
-| Vorteil | Nutzen |
+---
+
+### 3. `total` ist nur eine Heuristik
+
+Die Summenmetrik ist nützlich, aber grob.
+
+**Problem:**
+- gleiche Gewichtung aller Ressourcentypen
+- reale Performance-Relevanz wird nicht exakt abgebildet
+
+---
+
+### 4. CPU-Wert kann missverstanden werden
+
+**Gefahr:**
+- Nutzer lesen `cpuPct` als absolute Systemauslastung.
+- Tatsächlich ist es eher eine instanzbezogene Delta-Metrik.
+
+---
+
+### 5. HTML und Daten sind gekoppelt
+
+Das ist für VIS bequem, aber analytisch unflexibel.
+
+| Nachteil | Effekt |
 |---|---|
-| VIS bleibt nutzbar | HTML kann weiter direkt dargestellt werden |
-| Analyse wird besser | JSON ist für Debugging, Logging und Export geeignet |
-| Erweiterbarkeit | spätere Diagramme oder Alarme einfacher |
+| keine JSON-Struktur | erschwerte Weiterverarbeitung |
+| keine einfache Exportkette | schlechter für Grafana/InfluxDB o. Ä. |
+| Layout = Daten | schwierigere Wiederverwendung |
 
-### Priorität B: Gewichtete Leak-Score-Formel
+---
 
-Statt aller Ressourcen mit Gewicht `1` zu summieren, könnte ein gewichteter Score aussagekräftiger sein.
+## 🚀 Verbesserungen
 
-Beispiel:
+### A. HTML **und** JSON ausgeben
+
+> [!IMPORTANT]
+> Das wäre der größte praktische Hebel für die nächste Evolutionsstufe.
+
+Empfehlung:
+
+- `0_userdata.0.cpu_check` → HTML für VIS
+- `0_userdata.0.cpu_check_json` → strukturierte Rohdaten
+
+**Vorteile:**
+- bessere Debugbarkeit
+- einfachere Langzeitarchivierung
+- spätere Alarmierung oder Diagramme leichter möglich
+
+---
+
+### B. Gewichteten Leak-Score einführen
+
+Beispielidee:
 
 ```text
-score = 3*intervals + 3*timeouts + 4*wildcardSubs + 2*stateSubs + 2*messageHandlers + 1*logSubs + ...
+score = 4*wildcardSubs + 3*intervals + 3*timeouts + 2*stateSubs + 2*messageHandlers + 1*logSubs
 ```
 
-Damit würden schwerwiegende Muster schneller nach oben rutschen.
+Damit würden besonders teure oder verdächtige Muster deutlicher priorisiert.
 
-### Priorität C: Persistente Baseline oder Rolling Baseline
+---
 
-Zwei sinnvolle Varianten:
+### C. Persistente oder rollierende Baseline
 
-- **Persistente Baseline:** Baseline in separatem State speichern.
-- **Rolling Baseline:** Delta nicht seit Start, sondern z. B. gegen vor 10 Minuten oder gegen Median der letzten N Samples.
+Mögliche Strategien:
 
-Das macht die Aussage robuster bei Neustarts und bei sehr langen Laufzeiten.
+- 💾 Baseline in separatem State speichern
+- 🔄 Vergleich gegen den Stand vor 10 Minuten
+- 📊 Median oder gleitender Durchschnitt über die letzten Samples
 
-### Priorität D: Schwellenwerte und Alarme
+---
 
-Sinnvoll wären konfigurierbare Schwellwerte, zum Beispiel:
+### D. Alarme und Schwellwerte
+
+Sinnvolle Regeln wären zum Beispiel:
 
 - `Δstart > 20`
-- `intervals` wächst in 5 Samples hintereinander
-- `cpuPct > 40` für 3 Intervalle
+- `intervals` wächst in 5 Samples nacheinander
+- `cpuPct > 40` in 3 Intervallen
 
-Dann könnte das Skript zusätzlich Warnungen loggen oder einen Alarm-State setzen.
-
-### Priorität E: Bessere VIS-Lesbarkeit
-
-UI-Ideen:
-
-- Sticky Table Header
-- Kurzlabels mit Tooltip für Spalten
-- optionale Sortierung nach `Δstart` statt `total`
-- kleine Sparklines oder Trendpfeile
-- Farbpalette mit höherem Kontrast
+Dann könnte zusätzlich ein Alarm-State geschrieben oder ein Log-Eintrag erzeugt werden.
 
 ---
 
-## Praxisleitfaden zur Nutzung
+### E. Bessere VIS-UX
 
-### Vorgehen bei der Fehlersuche
+Konkrete Ideen:
 
-1. Skript starten und einige Minuten laufen lassen.
-2. Auf `Δstart` achten, nicht nur auf `total`.
-3. Prüfen, welche Spalten wachsen (`intv`, `state`, `wild`, `msg` sind oft besonders aufschlussreich).
-4. Historie lesen: taucht derselbe Skriptname wiederholt als Grower auf?
-5. Verdächtiges Skript gezielt im Quellcode prüfen.
+- 📌 Sticky Header in Tabellen
+- 🔃 Umschaltbare Sortierung (`total` / `Δstart`)
+- 💬 Tooltips für Spaltenkürzel
+- 📉 kleine Trendindikatoren oder Sparklines
+- 🎨 kontraststärkere Ampellogik
 
-### Typische Ursachen im Zielskript
+---
 
-| Muster im Diagnose-Output | Wahrscheinliche Ursache im Skript |
+## 🧪 Praxisleitfaden
+
+### So nutzt man das Skript sinnvoll
+
+1. Skript starten und mindestens einige Minuten laufen lassen.
+2. Zuerst auf **`Δstart`** schauen, nicht nur auf `total`.
+3. Prüfen, **welche** Ressourcentypen wachsen.
+4. Verlauf lesen: Taucht derselbe Kandidat wiederholt auf?
+5. Verdächtiges Skript gezielt im Code prüfen.
+
+### Mapping Diagnose → wahrscheinliche Ursache
+
+| Diagnosemuster | Typische Ursache im Zielskript |
 |---|---|
-| `intv` wächst | `setInterval()` wird mehrfach angelegt, aber nie `clearInterval()` |
-| `tmo` wächst | rekursive oder wiederholte `setTimeout()`-Erzeugung ohne Aufräumen |
-| `state` wächst | `on()` in Funktionen/Callbacks registriert sich mehrfach |
-| `wild` wächst | zu breite oder wiederholt angelegte Wildcard-Subscriptions |
-| `msg` wächst | `onMessage` oder vergleichbare Handler mehrfach gebunden |
-| `logSub` wächst | Logging-Subscription wird mehrfach aktiviert |
-| `delayed` wächst | Stau verzögerter `setStateDelayed()`-Operationen |
+| `intv` wächst | mehrfaches `setInterval()` ohne `clearInterval()` |
+| `tmo` wächst | fortlaufend neue `setTimeout()`-Ketten |
+| `state` wächst | `on()` wird wiederholt registriert |
+| `wild` wächst | breit angelegte oder doppelte Wildcard-Subscriptions |
+| `msg` wächst | Handler mehrfach gebunden |
+| `logSub` wächst | Log-Subscription nicht sauber beendet |
+| `delayed` wächst | aufgestaute `setStateDelayed()`-Operationen |
 
-### Gute Einsatzszenarien
-
-- Nach Deploy neuer JavaScript-Skripte
-- Bei unerklärlich wachsender Adapterlast
-- Bei Heap-/RSS-Anstieg über längere Laufzeit
-- In Multi-Host-Setups zur schnellen Eingrenzung der Probleminstanz
+> [!TIP]
+> In ioBroker sind Leaks oft keine „klassischen Speicherlecks“, sondern **vergessene Registrierungen**: also Timer, `on()`-Handler, Schedules oder Message-Handler, die immer wieder neu aufgebaut werden.
 
 ---
 
-## Fazit
+## 🏁 Gesamtbewertung
 
-Das Skript ist für den vorgesehenen Zweck **sehr brauchbar**: Es ist pragmatisch, VIS-tauglich und fokussiert genau auf die Klasse von Problemen, die in ioBroker oft schwer zu finden ist — schleichende Akkumulation von Timern, Subscriptions und Handlern.
+### Bewertungsmatrix
 
-Die größte Stärke ist die Kombination aus **aktueller Detailansicht**, **Delta seit Start** und **kompakter Historie**. Die größten Verbesserungshebel liegen in strukturierter Zweitausgabe (JSON), gewichteter Bewertung, optionaler Persistenz der Baseline und klareren Alarmregeln.
-
----
-
-## Anhang: Kurze Codebewertung
-
-| Kriterium | Einschätzung |
+| Kriterium | Urteil |
 |---|---|
-| Lesbarkeit | sehr gut |
-| Wartbarkeit | gut bis sehr gut |
-| VIS-Tauglichkeit | sehr gut |
-| Diagnosewert | hoch |
-| Erweiterbarkeit | gut |
-| Langzeit-Analyse | mittel |
-| Maschinenlesbarkeit | eher gering |
+| Lesbarkeit | 🟢 sehr gut |
+| Wartbarkeit | 🟢 gut bis sehr gut |
+| VIS-Tauglichkeit | 🟢 sehr gut |
+| Diagnosewert | 🟢 hoch |
+| Erweiterbarkeit | 🟢 gut |
+| Langzeit-Monitoring | 🟡 mittel |
+| Maschinenlesbarkeit | 🟠 eher gering |
 
-### Gesamturteil
-
-<span style="color:#2e7d32"><strong>Empfehlenswert für die operative Leak-Suche in ioBroker-JavaScript-Instanzen.</strong></span>
-
-Für ein dauerhaftes Monitoring würde sich eine zweite, strukturierte Datenebene zusätzlich lohnen.
+> [!SUCCESS]
+> **Empfehlenswert für die operative Leak-Suche in ioBroker-JavaScript-Instanzen.**
+>
+> Besonders stark ist die Kombination aus Detailansicht, `Δstart` und kompakter History. Für ein dauerhaftes Monitoring wäre eine zusätzliche JSON-Ausgabe der nächste logische Schritt.
