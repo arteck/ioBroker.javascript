@@ -874,6 +874,94 @@ class JavaScript extends adapter_core_1.Adapter {
                 }
                 break;
             }
+            case 'diag': {
+                const perScript = {};
+                const ensure = (name) => {
+                    if (!perScript[name]) {
+                        perScript[name] = {
+                            stateSubs: 0,
+                            wildcardSubs: 0,
+                            fileSubs: 0,
+                            objectSubs: 0,
+                            timeouts: 0,
+                            intervals: 0,
+                            schedules: 0,
+                            delayedStates: 0,
+                            messageHandlers: 0,
+                            logSubs: 0,
+                        };
+                    }
+                    return perScript[name];
+                };
+                for (const name of Object.keys(this.scripts)) {
+                    const s = this.scripts[name];
+                    const e = ensure(name);
+                    e.timeouts = s.timeouts.size;
+                    e.intervals = s.intervals.size;
+                    e.schedules = s.schedules.length;
+                }
+                for (const sub of this.subscriptions) {
+                    ensure(sub.name).stateSubs++;
+                }
+                for (const sub of this.subscriptionsWildcard) {
+                    ensure(sub.name).wildcardSubs++;
+                }
+                for (const sub of this.subscriptionsFile) {
+                    ensure(sub.name).fileSubs++;
+                }
+                for (const sub of this.subscriptionsObject) {
+                    ensure(sub.name).objectSubs++;
+                }
+                for (const name of Object.keys(this.messageBusHandlers)) {
+                    let cnt = 0;
+                    for (const msg of Object.keys(this.messageBusHandlers[name])) {
+                        cnt += this.messageBusHandlers[name][msg].length;
+                    }
+                    ensure(name).messageHandlers = cnt;
+                }
+                for (const name of Object.keys(this.logSubscriptions)) {
+                    ensure(name).logSubs = this.logSubscriptions[name].length;
+                }
+                for (const [name, ids] of this.timersByScript) {
+                    ensure(name).delayedStates = ids.size;
+                }
+                const mem = process.memoryUsage();
+                const cpu = process.cpuUsage();
+                let activeResources;
+                try {
+                    // Node 18+: counts of active handles/requests by type.
+                    // A rising "Timeout"/"TCPSocketWrap" count over time = a leak.
+                    const info = process
+                        .getActiveResourcesInfo?.();
+                    if (info) {
+                        activeResources = {};
+                        for (const r of info) {
+                            activeResources[r] = (activeResources[r] || 0) + 1;
+                        }
+                    }
+                }
+                catch {
+                    /* getActiveResourcesInfo not available – skip */
+                }
+                if (obj.callback) {
+                    this.sendTo(obj.from, obj.command, {
+                        scriptCount: Object.keys(this.scripts).length,
+                        global: {
+                            stateSubsTotal: this.subscriptions.length,
+                            wildcardSubsTotal: this.subscriptionsWildcard.length,
+                            fileSubsTotal: this.subscriptionsFile.length,
+                            objectSubsTotal: this.subscriptionsObject.length,
+                            rssMB: Math.round(mem.rss / 1048576),
+                            heapUsedMB: Math.round(mem.heapUsed / 1048576),
+                            cpuUserMs: Math.round(cpu.user / 1000),
+                            cpuSystemMs: Math.round(cpu.system / 1000),
+                            activeResources,
+                        },
+                        perScript,
+                    }, obj.callback);
+                }
+                break;
+            }
             case 'calcAstroAll': {
                 if (obj.message) {
                     const sunriseOffset = parseInt(obj.message.sunriseOffset === undefined
